@@ -2,10 +2,9 @@
 
 #include <Arduino.h>
 
-//#include "driver/i2s.h"		// 레거시 드라이버
-#include "driver/i2s_std.h"  // 표준 I2S
-#include "driver/i2s_pdm.h"  // PDM 마이크 사용 시
-#include "driver/i2s_tdm.h"  // 멀티 채널 사용 시
+
+#include "driver/i2s.h"		// 레거시 드라이버
+
 
 #include "esp_dsp.h"
 #include "tensorflow/lite/micro/micro_interpreter.h"
@@ -13,6 +12,11 @@
 
 #include "dtln_model_data_002.h"  // 이전 단계에서 준비한 모델 헤더
 
+// extern const unsigned char g_dtln_noise_suppression_model_data[];
+// extern const int g_dtln_noise_suppression_model_data_len;
+
+extern unsigned char dtln_noise_suppression_tflite[];
+extern unsigned int dtln_noise_suppression_tflite_len;
 
 // --- 설정 및 상수 ---
 #define 	SAMPLE_RATE 16000
@@ -74,13 +78,27 @@ void setup_dsp() {
 }
 
 void setup_tflm() {
-	model = tflite::GetModel(g_dtln_noise_suppression_model_data);
+	// 1. 에러 리포터 선언 (static으로 선언하여 메모리 유지)
+    //static tflite::ErrorReporter micro_error_reporter;
+	static tflite::MicroErrorReporter micro_error_reporter;
+
+	// 2. 모델 로드 및 Resolver 설정 (기존과 동일)
+	model = tflite::GetModel(dtln_noise_suppression_tflite);
 	static tflite::MicroMutableOpResolver<3> resolver;
 	resolver.AddUnidirectionalSequenceLSTM();
+
 	resolver.AddFullyConnected();
 	resolver.AddLogistic();
 
-	static tflite::MicroInterpreter static_interpreter(model, resolver, tensor_arena, kTensorArenaSize);
+	// 3. 인터프리터 생성 (마지막 인자로 &micro_error_reporter 추가)
+    static tflite::MicroInterpreter static_interpreter(
+		model,
+		resolver,
+		tensor_arena,
+		kTensorArenaSize,
+		&micro_error_reporter // 이 부분이 빠져서 에러가 발생했습니다.
+    );
+
 	interpreter = &static_interpreter;
 	interpreter->AllocateTensors();
 	input_tensor  = interpreter->input(0);
