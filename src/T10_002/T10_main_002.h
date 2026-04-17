@@ -80,7 +80,7 @@ void setup_dsp() {
 void setup_tflm() {
 	// 1. 에러 리포터 선언 (static으로 선언하여 메모리 유지)
     //static tflite::ErrorReporter micro_error_reporter;
-	static tflite::MicroErrorReporter micro_error_reporter;
+	// static tflite::MicroErrorReporter micro_error_reporter;
 
 	// 2. 모델 로드 및 Resolver 설정 (기존과 동일)
 	model = tflite::GetModel(dtln_noise_suppression_tflite);
@@ -96,7 +96,7 @@ void setup_tflm() {
 		resolver,
 		tensor_arena,
 		kTensorArenaSize,
-		&micro_error_reporter // 이 부분이 빠져서 에러가 발생했습니다.
+		nullptr // //&micro_error_reporter // 이 부분이 빠져서 에러가 발생했습니다.
     );
 
 	interpreter = &static_interpreter;
