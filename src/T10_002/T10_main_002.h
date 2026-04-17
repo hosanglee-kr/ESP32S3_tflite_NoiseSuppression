@@ -33,7 +33,11 @@ extern unsigned int dtln_noise_suppression_tflite_len;
 #define I2S_SPK_SD	7
 
 // --- 전역 변수 ---
-float fft_input[FFT_SIZE];
+// 512포인트 FFT 설정
+float fft_input[FFT_SIZE * 2]; // 복소수 저장용 (Real, Imag)
+float magnitude[INPUT_SIZE];   // 257개 빈 저장용
+//float fft_input[FFT_SIZE];
+
 float window[FFT_SIZE];
 float output_buffer[FFT_SIZE];
 float overlap_buffer[FFT_SIZE];
@@ -81,6 +85,7 @@ void setup_tflm() {
 	// 1. 에러 리포터 선언 (static으로 선언하여 메모리 유지)
     //static tflite::ErrorReporter micro_error_reporter;
 	// static tflite::MicroErrorReporter micro_error_reporter;
+	tflite::ErrorReporter* error_reporter = tflite::GetMicroErrorReporter();
 
 	// 2. 모델 로드 및 Resolver 설정 (기존과 동일)
 	model = tflite::GetModel(dtln_noise_suppression_tflite);
@@ -96,7 +101,8 @@ void setup_tflm() {
 		resolver,
 		tensor_arena,
 		kTensorArenaSize,
-		nullptr // //&micro_error_reporter // 이 부분이 빠져서 에러가 발생했습니다.
+		&micro_error_reporter
+		// nullptr // //&micro_error_reporter // 이 부분이 빠져서 에러가 발생했습니다.
     );
 
 	interpreter = &static_interpreter;
@@ -107,37 +113,75 @@ void setup_tflm() {
 
 // --- 핵심 처리 태스크 ---
 void audio_processing_task(void* pvParameters) {
-	int16_t raw_rx[HOP_SIZE];
-	int16_t raw_tx[HOP_SIZE];
-	size_t	bytes_read, bytes_written;
+    while (true) {
+        // [입력] I2S 마이크 데이터 읽기
+        i2s_read(I2S_NUM_0, rx_buf, sizeof(rx_buf), &bytes_read, portMAX_DELAY);
 
-	while (true) {
-		// 1. 마이크 데이터 읽기
-		i2s_read(I2S_NUM_0, raw_rx, sizeof(raw_rx), &bytes_read, portMAX_DELAY);
+        // 1. 전처리: Windowing & FFT
+        // ESP-DSP의 하드웨어 가속 함수 사용
+        dsps_fft2r_fc32(fft_input, FFT_SIZE);
+        dsps_bit_rev_fc32(fft_input, FFT_SIZE);
 
-		// 2. STFT 전처리 (Windowing + FFT)
-		// (참고: 실제 구현시 HOP 단위로 링버퍼 관리가 필요합니다)
-		for (int i = 0; i < HOP_SIZE; i++) fft_input[i] = raw_rx[i] / 32768.0f;
+        // 2. Magnitude 추출 및 양자화 (int8)
+        for (int i = 0; i < INPUT_SIZE; i++) {
+            float re = fft_input[i * 2];
+            float im = fft_input[i * 2 + 1];
+            magnitude[i] = sqrtf(re * re + im * im);
 
-		// 3. TFLM 추론 (DTLN 소음 제거)
-		// 입력 데이터 정규화 및 Tensor 전달
-		for (int i = 0; i < INPUT_SIZE; i++) {
-			input_tensor->data.int8[i] = (int8_t)(fft_input[i] * 127);	// Quantized 예시
-		}
+            // 모델의 Input Tensor에 입력 (Scale에 맞게 변환 필요)
+            input_tensor->data.int8[i] = (int8_t)(magnitude[i] * input_scale);
+        }
 
-		if (interpreter->Invoke() == kTfLiteOk) {
-			// 4. 결과 적용 (마스킹 등 후처리)
-			for (int i = 0; i < INPUT_SIZE; i++) {
-				float mask = output_tensor->data.int8[i] / 127.0f;
-				fft_input[i] *= mask;  // 단순 진폭 마스킹 예시
-			}
-		}
+        // 3. AI 추론 (DTLN)
+        interpreter->Invoke();
 
-		// 5. 출력 전송
-		for (int i = 0; i < HOP_SIZE; i++) raw_tx[i] = (int16_t)(fft_input[i] * 32767.0f);
-		i2s_write(I2S_NUM_1, raw_tx, sizeof(raw_tx), &bytes_written, portMAX_DELAY);
-	}
+        // 4. 후처리: 마스크 적용 및 iFFT
+        for (int i = 0; i < INPUT_SIZE; i++) {
+            float mask = output_tensor->data.int8[i] * output_scale;
+            fft_input[i * 2] *= mask;     // Real 파트 마스킹
+            fft_input[i * 2 + 1] *= mask; // Imag 파트 마스킹
+        }
+
+        // iFFT 수행하여 시간 영역 복원
+        dsps_ifft2r_fc32(fft_input, FFT_SIZE);
+
+        // [출력] I2S 스피커 데이터 쓰기
+        i2s_write(I2S_NUM_1, tx_buf, sizeof(tx_buf), &bytes_written, portMAX_DELAY);
+    }
 }
+
+// void audio_processing_task(void* pvParameters) {
+// 	int16_t raw_rx[HOP_SIZE];
+// 	int16_t raw_tx[HOP_SIZE];
+// 	size_t	bytes_read, bytes_written;
+
+// 	while (true) {
+// 		// 1. 마이크 데이터 읽기
+// 		i2s_read(I2S_NUM_0, raw_rx, sizeof(raw_rx), &bytes_read, portMAX_DELAY);
+
+// 		// 2. STFT 전처리 (Windowing + FFT)
+// 		// (참고: 실제 구현시 HOP 단위로 링버퍼 관리가 필요합니다)
+// 		for (int i = 0; i < HOP_SIZE; i++) fft_input[i] = raw_rx[i] / 32768.0f;
+
+// 		// 3. TFLM 추론 (DTLN 소음 제거)
+// 		// 입력 데이터 정규화 및 Tensor 전달
+// 		for (int i = 0; i < INPUT_SIZE; i++) {
+// 			input_tensor->data.int8[i] = (int8_t)(fft_input[i] * 127);	// Quantized 예시
+// 		}
+
+// 		if (interpreter->Invoke() == kTfLiteOk) {
+// 			// 4. 결과 적용 (마스킹 등 후처리)
+// 			for (int i = 0; i < INPUT_SIZE; i++) {
+// 				float mask = output_tensor->data.int8[i] / 127.0f;
+// 				fft_input[i] *= mask;  // 단순 진폭 마스킹 예시
+// 			}
+// 		}
+
+// 		// 5. 출력 전송
+// 		for (int i = 0; i < HOP_SIZE; i++) raw_tx[i] = (int16_t)(fft_input[i] * 32767.0f);
+// 		i2s_write(I2S_NUM_1, raw_tx, sizeof(raw_tx), &bytes_written, portMAX_DELAY);
+// 	}
+// }
 
 void T10_init() {
 	setup_dsp();

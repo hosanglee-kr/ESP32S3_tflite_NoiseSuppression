@@ -4,7 +4,7 @@
 
 #define T10
 #ifdef T10
-	#include "T10_002\T10_main_002.h"
+	#include "T10_002/T10_main_002.h"
 #endif
 
 void setup() {
