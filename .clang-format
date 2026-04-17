@@ -1,8 +1,8 @@
-{ 
-	BasedOnStyle: Google, 
-	UseTab: Always, 
-	IndentWidth: 4, 
-	TabWidth: 4, 
+{
+	BasedOnStyle: Google,
+	UseTab: Always,
+	IndentWidth: 4,
+	TabWidth: 4,
 	ColumnLimit: 0,
 	AlignAfterOpenBracket: Align,
 	IndentPPDirectives: BeforeHash,
